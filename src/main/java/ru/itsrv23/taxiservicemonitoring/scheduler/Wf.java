@@ -1,17 +1,12 @@
 package ru.itsrv23.taxiservicemonitoring.scheduler;
 
-import lombok.RequiredArgsConstructor;
 import lombok.SneakyThrows;
-import lombok.extern.log4j.Log4j;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
-import ru.itsrv23.taxiservicemonitoring.repository.XlogMainRepository;
 
-import javax.persistence.EntityManager;
 import javax.sql.DataSource;
 import java.io.IOException;
 import java.net.HttpURLConnection;
@@ -20,22 +15,20 @@ import java.net.URL;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.util.Objects;
 
 @Slf4j
-@RequiredArgsConstructor
 @Service
 public class Wf {
-    private final XlogMainRepository repository;
-    private final EntityManager entityManager;
-
     @Qualifier("psqlDataSource")
-    @Autowired
     private final DataSource psqlDataSource;
 
 //    @Qualifier("psql2DataSource")
 //    @Autowired
 //    private final DataSource psql2DataSource;
+//    private final XlogMainRepository repository;
+//    private final EntityManager entityManager;
 
     @Value("${telegram.bot.token}")
     private String token;
@@ -43,25 +36,40 @@ public class Wf {
     @Value("${telegram.bot.support.chat}")
     private String chat;
 
-    @SneakyThrows
+    public Wf(DataSource psqlDataSource) {
+        this.psqlDataSource = psqlDataSource;
+    }
+
     @Scheduled(fixedDelay = 60_000L)
-    public void checkerWfJDBC() {
+    public void checkerWfJDBC() throws SQLException {
         String sql = "select count(idx) as cnt from xlog_main where editdate >= now() - '1 minute'::interval and descr like ?";
-        Integer count = Integer.valueOf(-1);
-        Connection connection = psqlDataSource.getConnection();
-        PreparedStatement statement = connection.prepareStatement(sql);
-        statement.setString(1, "%ошибка связи%");
-        ResultSet resultSet = statement.executeQuery();
-        while (resultSet.next()) {
-            count = resultSet.getInt(1);
+        int count = -1;
+        Connection connection = null;
+        PreparedStatement statement = null;
+        ResultSet resultSet = null;
+        try {
+            connection = psqlDataSource.getConnection();
+            statement = connection.prepareStatement(sql);
+            statement.setString(1, "%ошибка связи%");
+            resultSet = statement.executeQuery();
+            while (resultSet.next()) {
+                count = resultSet.getInt(1);
+            }
+            log.info("Count Alerts: {}", count);
+            if (count >= 10) {
+                doJob();
+                sendAlert();
+                log.info("Ok, time to sleep");
+                Thread.sleep(180_000);
+            }
+        } catch (SQLException | IOException | InterruptedException e) {
+            throw new RuntimeException(e);
+        } finally {
+            Objects.requireNonNull(connection).close();
+            Objects.requireNonNull(statement).close();
+            Objects.requireNonNull(resultSet).close();
         }
-        log.info("Count Alerts: {}", count);
-        if (count >= 10) {
-            doJob();
-            sendAlert();
-            log.info("Ok, time to sleep");
-            Thread.sleep(300_000);
-        }
+
 
     }
 
@@ -106,7 +114,7 @@ public class Wf {
     }
 
     private void sendAlert() throws MalformedURLException {
-        String urlStr = String.format("https://api.telegram.org/bot%s/sendMessage?chat_id=%s&text=%s", token, chat, "Аларм, все пропало! WF в огне!!!");
+        String urlStr = String.format("https://api.telegram.org/bot%s/sendMessage?chat_id=%s&text=%s", token, chat, "Аларм, все пропало! WF в агонии...!!!");
         URL url = new URL(urlStr);
         HttpURLConnection con = null;
         try {
